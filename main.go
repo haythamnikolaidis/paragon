@@ -9,6 +9,7 @@ import (
 	"paragon/analysis"
 	"paragon/lsp"
 	"paragon/rpc"
+	"paragon/dictionary"
 )
 
 func main() {
@@ -80,16 +81,48 @@ func handleMessage(logger *log.Logger,
         var request lsp.TextDocumentHoverRequest
         if err := json.Unmarshal(content, &request); err != nil {
             logger.Println("Error unmarshalling hover request:", err)
+            sendErrorResponse(writer, logger, request.ID, "Invalid hover request")
             return
         }
 
-        msg := lsp.NewTextDocumentHoverResponse(request.ID, "Hello")
+        uri := request.Params.TextDocument.URI
+        position := request.Params.Position
+        content := state.Documents[uri]
+
+        word, err := analysis.FindWordAtPosition(content,
+            position.Line,
+            position.Character)
+
+        if err != nil {
+            logger.Println("Error finding word at position:", err)
+            sendErrorResponse(writer, logger, request.ID, "Could not find word at position")
+            return
+        }
+
+        definition, err := dictionary.GetDefinition(word)
+        if err != nil {
+            logger.Println("Error querying Ollama API:", err)
+            sendErrorResponse(writer, logger, request.ID, "Failed to retrieve definition")
+            return
+        }
+
+        msg := lsp.NewTextDocumentHoverResponse(request.ID, definition)
         response := rpc.EncodeMessage(msg)
 
         WriteResponse(writer, logger, response)
     }
 
+}
 
+func sendErrorResponse(writer io.Writer, logger *log.Logger, id int, message string) {
+    errorResponse := rpc.EncodeMessage(lsp.ErrorResponse{
+        ID:    id,
+        Error: lsp.ResponseError{Code: -32602, Message: message},
+    })
+
+    if _, err := writer.Write([]byte(errorResponse)); err != nil {
+        logger.Println("Error sending error response:", err)
+    }
 }
 
 func WriteResponse(writer io.Writer, logger *log.Logger, response string) {
